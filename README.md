@@ -3,8 +3,9 @@
 Tampermonkey userscript: drag a link or image to open it in a new tab, or drag
 selected text to search it. The drag direction picks the search engine.
 
-It never writes to the page and never talks to any server except the tab it
-opens. Tampermonkey checks this repository for updates.
+It adds nothing to the page except its settings dialog, and only while you
+have the dialog open. It never talks to any server except the tab it opens.
+Tampermonkey checks this repository for updates.
 
 I made this after Super Drag introduced a Pro version, as a simple
 alternative that stays free forever.
@@ -38,14 +39,16 @@ Selected text is searched by the direction you drag it:
 | Down      | Google Images                            |
 
 - Hold Shift when dropping to open the tab in the foreground.
-- Drops into input fields, drops the page handles itself, and drags of the
-  page's own `draggable="true"` widgets behave as usual.
+- Drops into input fields and drags of the page's own `draggable="true"`
+  widgets behave as usual.
 - Drags shorter than 10px are ignored.
 
-To pick another engine for a direction, edit `DIRECTIONS` at the top of the
-script. Engines are `google`, `images`, `youtube`, `translate`, and
-`wikipedia`; add more to `ENGINES`. Set a direction to `null` to ignore text
-dragged that way.
+To change what each direction searches, open the Tampermonkey menu and choose
+**Settings**. Each direction can use Google, Google Images, YouTube, Google
+Translate, Wikipedia, a custom URL in which `%s` becomes the dragged text, or
+None to ignore text dragged that way. The dialog opens on the current page,
+which can read a custom URL you select there, so keep private tokens out of
+custom URLs.
 
 ## Development
 

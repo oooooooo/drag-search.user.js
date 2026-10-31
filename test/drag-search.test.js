@@ -25,20 +25,12 @@ const XML_PAGE = `<feed>
 	<zone id="zone"/>
 </feed>`;
 
-// Replaces the DIRECTIONS setting, as a user would by editing the script.
-function withDirections(directions) {
-	const pattern = /const DIRECTIONS = \{[^}]*\};/;
-	expect(source).toMatch(pattern);
-	return source.replace(
-		pattern,
-		`const DIRECTIONS = ${JSON.stringify(directions)};`,
-	);
-}
+const XHTML = "http://www.w3.org/1999/xhtml";
 
 function setup({
 	contentType = "text/html",
 	language = "en-US",
-	script = source,
+	stored = {},
 } = {}) {
 	const markup = contentType === "text/html" ? PAGE : XML_PAGE;
 	const dom = new JSDOM(markup, {
@@ -49,12 +41,82 @@ function setup({
 	Object.defineProperty(dom.window.navigator, "language", {
 		value: language,
 	});
-	const GM_openInTab = vi.fn();
-	dom.window.GM_openInTab = GM_openInTab;
+	const storage = new Map(Object.entries(stored));
+	const GM = {
+		GM_openInTab: vi.fn(),
+		GM_getValue: vi.fn((key, fallback) =>
+			storage.has(key) ? structuredClone(storage.get(key)) : fallback,
+		),
+		GM_setValue: vi.fn((key, value) =>
+			storage.set(key, structuredClone(value)),
+		),
+		GM_registerMenuCommand: vi.fn(),
+	};
+	Object.assign(dom.window, GM);
 	trustFiredEvents(dom.window);
-	dom.window.eval(script);
-	return { dom, document: dom.window.document, GM_openInTab };
+	const shadowRoots = recordShadowRoots(dom.window);
+	addDialogMethods(dom.window);
+	dom.window.eval(source);
+	return { dom, document: dom.window.document, shadowRoots, ...GM };
 }
+
+// The settings dialog lives in a closed shadow root, which tests cannot reach
+// through the host, so keep every shadow root as it is created.
+function recordShadowRoots(window) {
+	const roots = [];
+	const { attachShadow } = window.Element.prototype;
+	window.Element.prototype.attachShadow = function (init) {
+		const root = attachShadow.call(this, init);
+		roots.push(root);
+		return root;
+	};
+	return roots;
+}
+
+// jsdom has no showModal() or close() on <dialog>.
+function addDialogMethods(window) {
+	Object.assign(window.HTMLDialogElement.prototype, {
+		showModal() {
+			this.setAttribute("open", "");
+		},
+		close() {
+			this.removeAttribute("open");
+			this.dispatchEvent(new window.Event("close"));
+		},
+	});
+}
+
+// Opens the settings from the Tampermonkey menu, as the user would.
+function openSettings({ GM_registerMenuCommand, shadowRoots }) {
+	const [, open] = GM_registerMenuCommand.mock.calls[0];
+	open();
+	const root = shadowRoots.at(-1);
+	const button = (label) =>
+		[...root.querySelectorAll("button")].find(
+			(element) => element.textContent === label,
+		);
+	return {
+		root,
+		dialog: root.querySelector("dialog"),
+		select: (direction) => root.querySelector(`select[name="${direction}"]`),
+		urlInput: (direction) =>
+			root.querySelector(`input[name="${direction}-url"]`),
+		error: () => root.querySelector("[role=alert]").textContent,
+		click: (label) => button(label).click(),
+	};
+}
+
+function choose(element, value) {
+	element.value = value;
+	element.dispatchEvent(new element.ownerDocument.defaultView.Event("change"));
+}
+
+const DEFAULTS = {
+	right: "google",
+	left: "translate",
+	up: "wikipedia",
+	down: "images",
+};
 
 // Events a page script dispatches itself, as opposed to ones the browser
 // dispatches for a real drag.
@@ -138,6 +200,12 @@ describe("drag-search.user.js", () => {
 		expect(header("homepageURL")).toBe(
 			"https://github.com/oooooooo/drag-search.user.js",
 		);
+	});
+
+	// Listeners added at document-start come before any the page adds, so the
+	// guard that hides the settings dialog's events from the page runs first.
+	it("runs before the page's own scripts", () => {
+		expect(header("run-at")).toBe("document-start");
 	});
 
 	it("opens a dragged link in a background tab", () => {
@@ -238,14 +306,10 @@ describe("drag-search.user.js", () => {
 		},
 	);
 
-	it("lets the user pick the engine for each direction", () => {
-		const script = withDirections({
-			right: "wikipedia",
-			left: "youtube",
-			up: "google",
-			down: "translate",
+	it("searches with the engine saved for a direction", () => {
+		const { document, GM_openInTab } = setup({
+			stored: { directions: { left: "youtube" } },
 		});
-		const { document, GM_openInTab } = setup({ script });
 
 		drag(document, byId(document, "text"), byId(document, "zone"), {
 			data: { "text/plain": "cat" },
@@ -258,14 +322,10 @@ describe("drag-search.user.js", () => {
 		);
 	});
 
-	it("ignores text dragged in a direction set to null, but still opens links", () => {
-		const script = withDirections({
-			right: "google",
-			left: null,
-			up: "wikipedia",
-			down: "images",
+	it("ignores text dragged in a direction saved as none, but still opens links", () => {
+		const { document, GM_openInTab } = setup({
+			stored: { directions: { left: null } },
 		});
-		const { document, GM_openInTab } = setup({ script });
 		const zone = byId(document, "zone");
 		const left = { x: -100, y: 0 };
 
@@ -282,6 +342,286 @@ describe("drag-search.user.js", () => {
 		expect(GM_openInTab.mock.calls.map(([url]) => url)).toEqual([
 			"https://example.com/a",
 		]);
+	});
+
+	it("searches with a custom URL saved for a direction", () => {
+		const { document, GM_openInTab } = setup({
+			stored: { directions: { right: "https://duckduckgo.com/?q=%s" } },
+		});
+
+		drag(document, byId(document, "text"), byId(document, "zone"), {
+			data: { "text/plain": "a b" },
+		});
+
+		expect(GM_openInTab).toHaveBeenCalledWith(
+			"https://duckduckgo.com/?q=a%20b",
+			{ active: false, insert: true },
+		);
+	});
+
+	it("puts the dragged text in every %s of a custom URL", () => {
+		const { document, GM_openInTab } = setup({
+			stored: {
+				directions: { right: "https://example.com/?q=%s&highlight=%s" },
+			},
+		});
+
+		drag(document, byId(document, "text"), byId(document, "zone"), {
+			data: { "text/plain": "red cat" },
+		});
+
+		expect(GM_openInTab).toHaveBeenCalledWith(
+			"https://example.com/?q=red%20cat&highlight=red%20cat",
+			{ active: false, insert: true },
+		);
+	});
+
+	it.each([
+		["an unknown engine", "bing"],
+		["a URL without %s", "https://duckduckgo.com/"],
+		["a URL that is not http(s)", "javascript:alert('%s')"],
+		["a number", 42],
+	])("falls back to the default engine when %s is saved", (_, saved) => {
+		const { document, GM_openInTab } = setup({
+			stored: { directions: { right: saved } },
+		});
+
+		drag(document, byId(document, "text"), byId(document, "zone"), {
+			data: { "text/plain": "cat" },
+		});
+
+		expect(GM_openInTab).toHaveBeenCalledWith(
+			"https://www.google.com/search?q=cat",
+			{ active: false, insert: true },
+		);
+	});
+
+	describe("settings dialog", () => {
+		it("is opened from a Settings command in the Tampermonkey menu", () => {
+			const context = setup();
+
+			expect(context.GM_registerMenuCommand).toHaveBeenCalledWith(
+				"Settings",
+				expect.any(Function),
+			);
+			const { dialog } = openSettings(context);
+			expect(dialog.hasAttribute("open")).toBe(true);
+		});
+
+		it("shows the saved setting of each direction", () => {
+			const settings = openSettings(
+				setup({
+					stored: {
+						directions: {
+							left: "youtube",
+							up: null,
+							down: "https://duckduckgo.com/?q=%s",
+						},
+					},
+				}),
+			);
+
+			expect(settings.select("right").value).toBe("google");
+			expect(settings.select("left").value).toBe("youtube");
+			expect(settings.select("up").value).toBe("none");
+			expect(settings.select("down").value).toBe("custom");
+			expect(settings.urlInput("down").value).toBe(
+				"https://duckduckgo.com/?q=%s",
+			);
+			expect(settings.urlInput("right").hidden).toBe(true);
+			expect(settings.urlInput("down").hidden).toBe(false);
+		});
+
+		it("saves the chosen engines and uses them for the next drag", () => {
+			const context = setup();
+			const { document, GM_openInTab, GM_setValue } = context;
+			const before = document.documentElement.outerHTML;
+			const settings = openSettings(context);
+
+			choose(settings.select("right"), "youtube");
+			choose(settings.select("up"), "none");
+			settings.click("Save");
+			drag(document, byId(document, "text"), byId(document, "zone"), {
+				data: { "text/plain": "cat" },
+			});
+
+			expect(GM_setValue).toHaveBeenCalledWith("directions", {
+				...DEFAULTS,
+				right: "youtube",
+				up: null,
+			});
+			expect(document.documentElement.outerHTML).toBe(before);
+			expect(GM_openInTab).toHaveBeenCalledWith(
+				"https://www.youtube.com/results?search_query=cat",
+				{ active: false, insert: true },
+			);
+		});
+
+		it("saves a custom URL", () => {
+			const context = setup();
+			const settings = openSettings(context);
+
+			choose(settings.select("down"), "custom");
+			expect(settings.urlInput("down").hidden).toBe(false);
+			settings.urlInput("down").value = " https://duckduckgo.com/?q=%s ";
+			settings.click("Save");
+
+			expect(context.GM_setValue).toHaveBeenCalledWith("directions", {
+				...DEFAULTS,
+				down: "https://duckduckgo.com/?q=%s",
+			});
+		});
+
+		it.each([
+			["without %s", "https://duckduckgo.com/"],
+			["that is not http(s)", "javascript:alert('%s')"],
+		])("refuses to save a custom URL %s", (_, url) => {
+			const context = setup();
+			const settings = openSettings(context);
+
+			choose(settings.select("down"), "custom");
+			settings.urlInput("down").value = url;
+			settings.click("Save");
+
+			expect(context.GM_setValue).not.toHaveBeenCalled();
+			expect(settings.dialog.isConnected).toBe(true);
+			expect(settings.error()).toContain("%s");
+		});
+
+		it("puts the defaults back in the form with Reset to defaults", () => {
+			const context = setup({
+				stored: { directions: { left: "youtube", up: null } },
+			});
+			const settings = openSettings(context);
+
+			settings.click("Reset to defaults");
+			settings.click("Save");
+
+			expect(context.GM_setValue).toHaveBeenCalledWith("directions", DEFAULTS);
+		});
+
+		it.each([
+			["Cancel", (settings) => settings.click("Cancel")],
+			["Escape", (settings) => settings.dialog.close()],
+		])(
+			"closes without saving on %s and leaves the page as it was",
+			(_, close) => {
+				const context = setup();
+				const before = context.document.documentElement.outerHTML;
+				const settings = openSettings(context);
+
+				choose(settings.select("right"), "youtube");
+				close(settings);
+
+				expect(context.GM_setValue).not.toHaveBeenCalled();
+				expect(settings.dialog.isConnected).toBe(false);
+				expect(context.document.documentElement.outerHTML).toBe(before);
+			},
+		);
+
+		it("leaves text dragged within the settings dialog alone", () => {
+			const context = setup();
+			const settings = openSettings(context);
+			choose(settings.select("down"), "custom");
+			const input = settings.urlInput("down");
+
+			const { dragover, drop } = drag(context.document, input, input, {
+				data: { "text/plain": "https://duckduckgo.com/?q=%s" },
+			});
+
+			expect(dragover.defaultPrevented).toBe(false);
+			expect(drop.defaultPrevented).toBe(false);
+			expect(context.GM_openInTab).not.toHaveBeenCalled();
+		});
+
+		it.each([
+			["while bubbling", false],
+			["while capturing", true],
+		])(
+			"keeps keys typed in the settings dialog from page shortcuts that listen %s",
+			(_, capture) => {
+				const context = setup();
+				const pageShortcut = vi.fn((event) => event.preventDefault());
+				context.document.addEventListener("keydown", pageShortcut, { capture });
+				const settings = openSettings(context);
+				choose(settings.select("down"), "custom");
+
+				const key = new context.dom.window.KeyboardEvent("keydown", {
+					key: "/",
+					bubbles: true,
+					cancelable: true,
+					composed: true,
+				});
+				settings.urlInput("down").dispatchEvent(key);
+
+				expect(pageShortcut).not.toHaveBeenCalled();
+				expect(key.defaultPrevented).toBe(false);
+			},
+		);
+
+		it.each([
+			"dragstart",
+			"drag",
+			"dragend",
+			"dragenter",
+			"dragover",
+			"dragleave",
+			"drop",
+			"beforeinput",
+			"input",
+			"paste",
+			"copy",
+			"cut",
+			"compositionstart",
+			"compositionupdate",
+			"compositionend",
+		])(
+			"keeps the page from seeing %s events from the settings dialog",
+			(type) => {
+				const context = setup();
+				const pageListener = vi.fn();
+				context.document.addEventListener(type, pageListener, {
+					capture: true,
+				});
+				const settings = openSettings(context);
+				choose(settings.select("down"), "custom");
+
+				settings.urlInput("down").dispatchEvent(
+					new context.dom.window.Event(type, {
+						bubbles: true,
+						composed: true,
+					}),
+				);
+
+				expect(pageListener).not.toHaveBeenCalled();
+			},
+		);
+
+		it("names each control after its direction for screen readers", () => {
+			const settings = openSettings(setup());
+
+			expect(settings.select("left").labels[0].textContent).toBe("← Left");
+			expect(settings.urlInput("left").getAttribute("aria-label")).toBe(
+				"← Left: custom URL",
+			);
+		});
+
+		it("opens only one dialog at a time", () => {
+			const context = setup();
+
+			openSettings(context);
+			openSettings(context);
+
+			expect(context.document.documentElement.children).toHaveLength(3);
+		});
+
+		it("builds HTML elements on XML pages", () => {
+			const { dialog, root } = openSettings(setup({ contentType: "text/xml" }));
+
+			expect(root.host.namespaceURI).toBe(XHTML);
+			expect(dialog.namespaceURI).toBe(XHTML);
+			expect(root.querySelector("select").namespaceURI).toBe(XHTML);
+		});
 	});
 
 	it("opens a dragged link whichever way it is dragged", () => {
