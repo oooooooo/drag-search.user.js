@@ -13,6 +13,9 @@ const PAGE = `<!doctype html><body>
 	<a id="script-link" href="javascript:alert(1)">x</a>
 	<div id="widget" draggable="true">drag me</div>
 	<textarea id="editor"></textarea>
+	<div id="plain-editor" contenteditable="plaintext-only">plain</div>
+	<div id="upper-editor" contenteditable="TRUE">upper</div>
+	<div id="shadow-host"></div>
 	<div id="zone"></div>
 </body>`;
 
@@ -48,19 +51,48 @@ function setup({
 	});
 	const GM_openInTab = vi.fn();
 	dom.window.GM_openInTab = GM_openInTab;
+	trustFiredEvents(dom.window);
 	dom.window.eval(script);
 	return { dom, document: dom.window.document, GM_openInTab };
+}
+
+// Events a page script dispatches itself, as opposed to ones the browser
+// dispatches for a real drag.
+const untrusted = new WeakSet();
+
+// jsdom marks every dispatched event untrusted and will not let tests change
+// isTrusted, so window listeners see each event through a proxy whose
+// isTrusted is false only for events fired with { trusted: false }.
+function trustFiredEvents(window) {
+	const addEventListener = window.addEventListener.bind(window);
+	window.addEventListener = (type, listener, options) =>
+		addEventListener(
+			type,
+			(event) =>
+				listener(
+					new Proxy(event, {
+						get: (target, key) => {
+							if (key === "isTrusted") return !untrusted.has(target);
+							const value = target[key];
+							return typeof value === "function" ? value.bind(target) : value;
+						},
+					}),
+				),
+			options,
+		);
 }
 
 function dataTransfer(data) {
 	return { getData: (type) => data[type] ?? "", dropEffect: "none" };
 }
 
-function fire(document, target, type, props = {}) {
+function fire(document, target, type, { trusted = true, ...props } = {}) {
 	const event = new document.defaultView.Event(type, {
 		bubbles: true,
 		cancelable: true,
+		composed: true,
 	});
+	if (!trusted) untrusted.add(event);
 	Object.assign(event, { clientX: 0, clientY: 0, shiftKey: false });
 	for (const [key, value] of Object.entries(props)) {
 		Object.defineProperty(event, key, { value });
@@ -75,14 +107,19 @@ function drag(
 	document,
 	from,
 	to,
-	{ data, move = { x: 100, y: 0 }, shiftKey = false } = {},
+	{ data, move = { x: 100, y: 0 }, shiftKey = false, trusted = true } = {},
 ) {
 	const transfer = dataTransfer(data);
-	fire(document, from, "dragstart", { dataTransfer: transfer });
-	const point = { clientX: move.x, clientY: move.y, dataTransfer: transfer };
+	fire(document, from, "dragstart", { dataTransfer: transfer, trusted });
+	const point = {
+		clientX: move.x,
+		clientY: move.y,
+		dataTransfer: transfer,
+		trusted,
+	};
 	const dragover = fire(document, to, "dragover", point);
 	const drop = fire(document, to, "drop", { ...point, shiftKey });
-	fire(document, from, "dragend", { dataTransfer: transfer });
+	fire(document, from, "dragend", { dataTransfer: transfer, trusted });
 	return { dragover, drop };
 }
 
@@ -324,14 +361,103 @@ describe("drag-search.user.js", () => {
 		expect(GM_openInTab).not.toHaveBeenCalled();
 	});
 
-	it("leaves drops into editable fields to the browser", () => {
+	it.each([
+		["a textarea", "editor"],
+		["a plaintext-only editor", "plain-editor"],
+		["an editor marked TRUE in capitals", "upper-editor"],
+	])("leaves drops into %s to the browser", (_, id) => {
 		const { document, GM_openInTab } = setup();
 
 		const { dragover, drop } = drag(
 			document,
 			byId(document, "text"),
-			byId(document, "editor"),
+			byId(document, id),
 			{ data: { "text/plain": "hello" } },
+		);
+
+		expect(dragover.defaultPrevented).toBe(false);
+		expect(drop.defaultPrevented).toBe(false);
+		expect(GM_openInTab).not.toHaveBeenCalled();
+	});
+
+	it("leaves drops into an editable field inside a shadow root to the browser", () => {
+		const { document, GM_openInTab } = setup();
+		const root = byId(document, "shadow-host").attachShadow({ mode: "open" });
+		root.innerHTML = "<textarea></textarea>";
+
+		const { dragover, drop } = drag(
+			document,
+			byId(document, "text"),
+			root.querySelector("textarea"),
+			{ data: { "text/plain": "hello" } },
+		);
+
+		expect(dragover.defaultPrevented).toBe(false);
+		expect(drop.defaultPrevented).toBe(false);
+		expect(GM_openInTab).not.toHaveBeenCalled();
+	});
+
+	it("leaves text dragged out of an editable field inside a shadow root alone", () => {
+		const { document, GM_openInTab } = setup();
+		const root = byId(document, "shadow-host").attachShadow({ mode: "open" });
+		root.innerHTML = "<textarea>hello</textarea>";
+
+		const { dragover } = drag(
+			document,
+			root.querySelector("textarea"),
+			byId(document, "zone"),
+			{ data: { "text/plain": "hello" } },
+		);
+
+		expect(dragover.defaultPrevented).toBe(false);
+		expect(GM_openInTab).not.toHaveBeenCalled();
+	});
+
+	it("leaves a link inside a draggable widget's shadow root alone", () => {
+		const { document, GM_openInTab } = setup();
+		const host = byId(document, "shadow-host");
+		host.setAttribute("draggable", "true");
+		const root = host.attachShadow({ mode: "open" });
+		root.innerHTML = '<a href="https://example.com/a">a</a>';
+
+		const { dragover } = drag(
+			document,
+			root.querySelector("a"),
+			byId(document, "zone"),
+			{ data: { "text/uri-list": "https://example.com/a" } },
+		);
+
+		expect(dragover.defaultPrevented).toBe(false);
+		expect(GM_openInTab).not.toHaveBeenCalled();
+	});
+
+	it("leaves drops into a shadow root inside an editor to the browser", () => {
+		const { document, GM_openInTab } = setup();
+		const host = byId(document, "shadow-host");
+		host.setAttribute("contenteditable", "true");
+		const root = host.attachShadow({ mode: "open" });
+		root.innerHTML = "<span>inside</span>";
+
+		const { dragover, drop } = drag(
+			document,
+			byId(document, "text"),
+			root.querySelector("span"),
+			{ data: { "text/plain": "hello" } },
+		);
+
+		expect(dragover.defaultPrevented).toBe(false);
+		expect(drop.defaultPrevented).toBe(false);
+		expect(GM_openInTab).not.toHaveBeenCalled();
+	});
+
+	it("ignores drags that a page script fakes", () => {
+		const { document, GM_openInTab } = setup();
+
+		const { dragover, drop } = drag(
+			document,
+			byId(document, "text"),
+			byId(document, "zone"),
+			{ data: { "text/uri-list": "https://evil.test/" }, trusted: false },
 		);
 
 		expect(dragover.defaultPrevented).toBe(false);

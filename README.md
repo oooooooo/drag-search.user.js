@@ -12,7 +12,9 @@ alternative that stays free forever.
 ## Install
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) in Chrome.
-2. Open
+2. Turn on "Allow User Scripts" on Tampermonkey's extension details page
+   (`chrome://extensions`). Recent Chrome runs no userscripts without it.
+3. Open
    [drag-search.user.js](https://raw.githubusercontent.com/oooooooo/drag-search.user.js/main/drag-search.user.js)
    and click Install.
 

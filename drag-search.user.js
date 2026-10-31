@@ -5,7 +5,7 @@
 // @downloadURL  https://raw.githubusercontent.com/oooooooo/drag-search.user.js/main/drag-search.user.js
 // @updateURL    https://raw.githubusercontent.com/oooooooo/drag-search.user.js/main/drag-search.user.js
 // @license      MIT
-// @version      1.1.1
+// @version      1.1.2
 // @description  Drag a link to open it, or drag selected text to search it, in a new tab
 // @match        http://*/*
 // @match        https://*/*
@@ -32,8 +32,11 @@
 	};
 	// A click that wobbles while pressed starts a short drag; ignore those.
 	const MIN_DISTANCE = 10;
-	const EDITABLE =
-		'input, textarea, [contenteditable=""], [contenteditable="true"]';
+	const FORM_FIELD = "input, textarea";
+	// The nearest element that sets contenteditable to a valid value decides
+	// whether its contents are editable. Values are case-insensitive.
+	const EDITING_HOST_OR_OPT_OUT =
+		':is([contenteditable=""], [contenteditable="true" i], [contenteditable="plaintext-only" i], [contenteditable="false" i])';
 
 	// Google Translate tells the two Chinese scripts apart by region.
 	function translateLanguage(locale) {
@@ -56,13 +59,26 @@
 	// Where the current drag started, or null when the drag is not ours.
 	let origin = null;
 
-	const toElement = (node) =>
-		node?.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+	// The elements the event passed through, innermost first. Unlike
+	// event.target and closest(), this reaches inside shadow roots and out to
+	// the ancestors of their hosts.
+	const elementsOf = (event) =>
+		event.composedPath().filter((node) => node.nodeType === Node.ELEMENT_NODE);
 
-	const isEditable = (node) => toElement(node)?.closest?.(EDITABLE) != null;
+	const isEditable = (event) => {
+		const elements = elementsOf(event);
+		if (elements.some((element) => element.matches(FORM_FIELD))) return true;
+		const decider = elements.find((element) =>
+			element.matches(EDITING_HOST_OR_OPT_OUT),
+		);
+		return (
+			decider != null &&
+			decider.getAttribute("contenteditable").toLowerCase() !== "false"
+		);
+	};
 
-	const isPageDraggable = (node) =>
-		toElement(node)?.closest?.('[draggable="true"]') != null;
+	const isPageDraggable = (event) =>
+		elementsOf(event).some((element) => element.matches('[draggable="true"]'));
 
 	const webUrl = (text) => {
 		try {
@@ -112,16 +128,24 @@
 
 	// Listen on window while capturing, ahead of the page: pages with a
 	// page-wide file drop zone (Gemini, for one) cancel and stop every drop.
+	// Page scripts can dispatch drag events too; act only on real drags, so a
+	// page cannot open tabs through GM_openInTab.
 	const listen = (type, listener) =>
-		window.addEventListener(type, listener, { capture: true });
+		window.addEventListener(
+			type,
+			(event) => {
+				if (event.isTrusted) listener(event);
+			},
+			{ capture: true },
+		);
 
 	listen("dragstart", (event) => {
-		const ours = !isEditable(event.target) && !isPageDraggable(event.target);
+		const ours = !isEditable(event) && !isPageDraggable(event);
 		origin = ours ? { x: event.clientX, y: event.clientY } : null;
 	});
 
 	listen("dragover", (event) => {
-		if (origin === null || isEditable(event.target)) return;
+		if (origin === null || isEditable(event)) return;
 		// Without this the browser refuses the drop.
 		event.preventDefault();
 	});
@@ -129,7 +153,7 @@
 	listen("drop", (event) => {
 		const start = origin;
 		origin = null;
-		if (start === null || isEditable(event.target)) return;
+		if (start === null || isEditable(event)) return;
 		// Otherwise the browser navigates this tab to the dropped link.
 		event.preventDefault();
 

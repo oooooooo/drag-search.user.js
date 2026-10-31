@@ -50,8 +50,11 @@ Settings at the top of `drag-search.user.js`:
 The tests load the userscript with `JSDOM`'s `window.eval`, replace
 `GM_openInTab` with `vi.fn()`, and set `navigator.language` (default `en-US`).
 jsdom has no `DragEvent` or `DataTransfer`, so `fire()` dispatches an `Event`
-with `dataTransfer`, `clientX`, `clientY`, and `shiftKey` attached. `drag()`
-sends dragstart → dragover → drop → dragend in order. `withDirections()`
+with `dataTransfer`, `clientX`, `clientY`, and `shiftKey` attached. jsdom
+marks every dispatched event untrusted and `isTrusted` cannot be overridden,
+so `trustFiredEvents()` hands window listeners a proxy whose `isTrusted` is
+false only for events fired with `{ trusted: false }`. `drag()` sends
+dragstart → dragover → drop → dragend in order. `withDirections()`
 rewrites the `DIRECTIONS` literal in the source, as a user would.
 
 jsdom cannot fully reproduce real drags. When changing drag handling, load the
