@@ -1,0 +1,25 @@
+{
+	"name": "drag-search.user.js",
+	"version": "1.0.0",
+	"description": "Tampermonkey userscript: drag a link to open it, or drag selected text to search it, in a new tab",
+	"type": "module",
+	"private": true,
+	"license": "MIT",
+	"scripts": {
+		"test": "vitest run",
+		"lint": "biome check ."
+	},
+	"devEngines": {
+		"packageManager": {
+			"name": "pnpm",
+			"version": "12.15.0",
+			"onFail": "download"
+		}
+	},
+	"packageManager": "pnpm@12.15.0",
+	"devDependencies": {
+		"@biomejs/biome": "^2.6.4",
+		"jsdom": "^30.1.3",
+		"vitest": "^5.0.5"
+	}
+}
