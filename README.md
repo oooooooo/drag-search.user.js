@@ -6,6 +6,9 @@ selected text to search it. The drag direction picks the search engine.
 It never writes to the page and never talks to any server except the tab it
 opens. Tampermonkey checks this repository for updates.
 
+I made this after Super Drag introduced a Pro version, as a simple
+alternative that stays free forever.
+
 ## Install
 
 1. Install [Tampermonkey](https://www.tampermonkey.net/) in Chrome.
