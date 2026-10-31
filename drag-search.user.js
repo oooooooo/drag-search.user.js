@@ -5,7 +5,7 @@
 // @downloadURL  https://raw.githubusercontent.com/oooooooo/drag-search.user.js/main/drag-search.user.js
 // @updateURL    https://raw.githubusercontent.com/oooooooo/drag-search.user.js/main/drag-search.user.js
 // @license      MIT
-// @version      1.1.0
+// @version      1.1.1
 // @description  Drag a link to open it, or drag selected text to search it, in a new tab
 // @match        http://*/*
 // @match        https://*/*
@@ -110,22 +110,26 @@
 		}
 	};
 
-	document.addEventListener("dragstart", (event) => {
+	// Listen on window while capturing, ahead of the page: pages with a
+	// page-wide file drop zone (Gemini, for one) cancel and stop every drop.
+	const listen = (type, listener) =>
+		window.addEventListener(type, listener, { capture: true });
+
+	listen("dragstart", (event) => {
 		const ours = !isEditable(event.target) && !isPageDraggable(event.target);
 		origin = ours ? { x: event.clientX, y: event.clientY } : null;
 	});
 
-	document.addEventListener("dragover", (event) => {
+	listen("dragover", (event) => {
 		if (origin === null || isEditable(event.target)) return;
 		// Without this the browser refuses the drop.
 		event.preventDefault();
 	});
 
-	document.addEventListener("drop", (event) => {
+	listen("drop", (event) => {
 		const start = origin;
 		origin = null;
-		if (start === null || event.defaultPrevented) return;
-		if (isEditable(event.target)) return;
+		if (start === null || isEditable(event.target)) return;
 		// Otherwise the browser navigates this tab to the dropped link.
 		event.preventDefault();
 
@@ -136,7 +140,7 @@
 		if (url !== null) openTab(url, event.shiftKey);
 	});
 
-	document.addEventListener("dragend", () => {
+	listen("dragend", () => {
 		origin = null;
 	});
 })();

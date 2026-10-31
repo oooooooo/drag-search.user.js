@@ -339,17 +339,26 @@ describe("drag-search.user.js", () => {
 		expect(GM_openInTab).not.toHaveBeenCalled();
 	});
 
-	it("leaves drops the page already handled to the page", () => {
+	// Like Gemini, whose file upload drop zone covers the whole chat and
+	// takes every drop, even text dragged within the page.
+	it("searches text dropped on a page-wide drop zone that takes every drop", () => {
 		const { document, GM_openInTab } = setup();
-		byId(document, "zone").addEventListener("drop", (event) =>
-			event.preventDefault(),
-		);
+		const zone = byId(document, "zone");
+		for (const type of ["dragover", "drop"]) {
+			zone.addEventListener(type, (event) => {
+				event.preventDefault();
+				event.stopPropagation();
+			});
+		}
 
-		drag(document, byId(document, "link"), byId(document, "zone"), {
-			data: { "text/uri-list": "https://example.com/a" },
+		drag(document, byId(document, "text"), zone, {
+			data: { "text/plain": "cat" },
 		});
 
-		expect(GM_openInTab).not.toHaveBeenCalled();
+		expect(GM_openInTab).toHaveBeenCalledWith(
+			"https://www.google.com/search?q=cat",
+			{ active: false, insert: true },
+		);
 	});
 
 	it("leaves the page's own draggable widgets alone", () => {

@@ -71,6 +71,9 @@ userscript with `page.addInitScript` in Playwright's Chromium and drag with
   article when the text matches a title
 - Wikipedia names Norwegian Bokmål `no`, not `nb`. Google Translate takes
   `zh-CN` / `zh-TW` for Chinese and the language subtag otherwise
+- Gemini (`gemini.google.com`) covers the chat with a file drop zone that
+  calls `preventDefault()` on every drop and `stopPropagation()` on dragenter,
+  so the script listens on `window` in the capture phase
 - In recent Chrome, Tampermonkey runs scripts only after "Allow User Scripts"
   is turned on in the extension's details page
 
